@@ -96,31 +96,99 @@ class BaseView(HtmlView):
 
 class SiteView(BaseView):
     PATTERN = '/{site}'
+
+    @property
+    def path_site(self):
+        # Custom conversion with caching
+        if not hasattr(self, '_site'):
+            self._site = Site.get(self.path_params['site'])
+            if not self._site:
+                raise NotFoundException()
+        return self._site
+
     def do_check(self):
         super().do_check()
-        self.site = get_site(self.path_params['site'])
-        if not self.site:
-            raise NotFoundException()
+        _ = self.path_site  # trigger loading
 
 class CargoListView(SiteView):
     PATTERN = '/cargo'
     # Full pattern: /{site}/cargo
     def do_get(self):
-        cargos = Cargo.list(site=self.site)
+        cargos = Cargo.list(site=self.path_site)
         self.respond({'cargos': cargos})
 
 class CargoDetailView(SiteView):
     PATTERN = '/cargo/{id:int}'
     # Full pattern: /{site}/cargo/{id:int}
     def do_get(self):
-        cargo = Cargo.get(self.path_params['id'])
+        cargo = Cargo.get(self.path_id)  # lazy access
         self.respond(cargo)
 ```
 
 Benefits:
 - Shared logic in parent `do_check()` (auth, loading site, etc.)
-- Access to parent's instance variables (`self.user`, `self.site`)
+- Access to parent's instance variables (`self.user`, `self.path_site`)
 - DRY patterns - no need to repeat `/{site}` prefix
+
+## Parameter Access
+
+Path and query parameters are accessible via `path_*` and `query_*` attributes:
+
+```python
+class UserListView(JsonView):
+    PATTERN = '/users/{role}'
+    QUERY_PARAMS = {
+        'page': (int, 0),       # (type, default)
+        'limit': (int, 20),
+        'search': (str, None),  # optional
+    }
+
+    def do_get(self):
+        # Lazy-load with caching:
+        role = self.path_role      # from URL path
+        page = self.query_page     # from ?page=N, default 0
+        limit = self.query_limit   # from ?limit=N, default 20
+        search = self.query_search # from ?search=X, default None
+
+        users = User.list(role=role, page=page, limit=limit)
+        self.respond({'users': users})
+```
+
+Features:
+- Lazy-loaded on first access, then cached
+- Type conversion with validation (raises `BadRequestException` on invalid value)
+- `QUERY_PARAMS` inherited from parent classes
+- Override with `@property` for custom logic
+
+## Form Data
+
+Access POST/PUT form data or JSON body:
+
+```python
+class UserEditView(HtmlView):
+    PATTERN = '/user/{id:int}/edit'
+
+    def do_post(self):
+        if self.has_form('save'):
+            # form_data returns dict or {} if not available
+            user.set_from_form_data(self.form_data)
+            user.db_save(db)
+            raise RedirectException(f'/user/{self.path_id}')
+
+        if self.has_form('delete'):
+            user.db_delete(db)
+            raise RedirectException('/users')
+
+        # Get individual fields with defaults
+        name = self.get_form('name', '')
+        email = self.get_form('email')  # None if missing
+```
+
+| Method | Description |
+|--------|-------------|
+| `form_data` | Property returning form dict or `{}` |
+| `get_form(key, default=None)` | Get field value or default |
+| `has_form(*keys)` | True if all keys present |
 
 ## Method Routing
 

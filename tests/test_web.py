@@ -411,6 +411,199 @@ class TestViewPatternInheritance(unittest.TestCase):
         self.assertIsNone(CargoView.match_path(['mysite']))
 
 
+class TestPathParamAccess(unittest.TestCase):
+    """Tests for path_* attribute access via __getattr__."""
+
+    def setUp(self):
+        self.manager = Mock()
+        self.connection = Mock()
+        self.connection.query = None
+
+    def test_path_param_access(self):
+        view = View(self.manager, self.connection, {'id': 123, 'name': 'test'})
+        self.assertEqual(view.path_id, 123)
+        self.assertEqual(view.path_name, 'test')
+
+    def test_path_param_cached(self):
+        view = View(self.manager, self.connection, {'id': 42})
+        _ = view.path_id
+        # Second access should use cached value
+        self.assertEqual(view.path_id, 42)
+        self.assertTrue(hasattr(view, 'path_id'))
+
+    def test_path_param_not_found(self):
+        view = View(self.manager, self.connection, {'id': 1})
+        with self.assertRaises(AttributeError) as ctx:
+            _ = view.path_name
+        self.assertIn('path param', str(ctx.exception))
+
+    def test_unknown_attribute_raises(self):
+        view = View(self.manager, self.connection, {})
+        with self.assertRaises(AttributeError):
+            _ = view.unknown_attr
+
+
+class TestQueryParamAccess(unittest.TestCase):
+    """Tests for query_* attribute access and QUERY_PARAMS."""
+
+    def setUp(self):
+        self.manager = Mock()
+        self.connection = Mock()
+
+    def test_query_param_with_default(self):
+        class TestView(View):
+            QUERY_PARAMS = {'page': (int, 0)}
+        self.connection.query = None
+        view = TestView(self.manager, self.connection)
+        self.assertEqual(view.query_page, 0)
+
+    def test_query_param_from_request(self):
+        class TestView(View):
+            QUERY_PARAMS = {'page': (int, 0)}
+        self.connection.query = {'page': '5'}
+        view = TestView(self.manager, self.connection)
+        self.assertEqual(view.query_page, 5)
+
+    def test_query_param_string(self):
+        class TestView(View):
+            QUERY_PARAMS = {'search': (str, '')}
+        self.connection.query = {'search': 'hello'}
+        view = TestView(self.manager, self.connection)
+        self.assertEqual(view.query_search, 'hello')
+
+    def test_query_param_cached(self):
+        class TestView(View):
+            QUERY_PARAMS = {'page': (int, 1)}
+        self.connection.query = {'page': '10'}
+        view = TestView(self.manager, self.connection)
+        _ = view.query_page
+        self.assertTrue(hasattr(view, 'query_page'))
+        self.assertEqual(view.query_page, 10)
+
+    def test_query_param_invalid_raises_bad_request(self):
+        class TestView(View):
+            QUERY_PARAMS = {'page': (int, 0)}
+        self.connection.query = {'page': 'not_a_number'}
+        view = TestView(self.manager, self.connection)
+        with self.assertRaises(BadRequestException):
+            _ = view.query_page
+
+    def test_query_param_not_defined_raises(self):
+        class TestView(View):
+            QUERY_PARAMS = {'page': (int, 0)}
+        self.connection.query = {}
+        view = TestView(self.manager, self.connection)
+        with self.assertRaises(AttributeError) as ctx:
+            _ = view.query_unknown
+        self.assertIn('query param', str(ctx.exception))
+
+    def test_query_params_inherited(self):
+        class BaseView(View):
+            QUERY_PARAMS = {'page': (int, 0)}
+
+        class ChildView(BaseView):
+            QUERY_PARAMS = {'limit': (int, 10)}
+
+        self.connection.query = {'page': '2', 'limit': '50'}
+        view = ChildView(self.manager, self.connection)
+        self.assertEqual(view.query_page, 2)
+        self.assertEqual(view.query_limit, 50)
+
+    def test_query_params_dict(self):
+        class TestView(View):
+            QUERY_PARAMS = {'page': (int, 0), 'search': (str, None)}
+        self.connection.query = {'page': '3'}
+        view = TestView(self.manager, self.connection)
+        params = view.query_params
+        self.assertEqual(params['page'], 3)
+        self.assertIsNone(params['search'])
+
+    def test_query_param_float(self):
+        class TestView(View):
+            QUERY_PARAMS = {'price': (float, 0.0)}
+        self.connection.query = {'price': '19.99'}
+        view = TestView(self.manager, self.connection)
+        self.assertEqual(view.query_price, 19.99)
+
+    def test_property_overrides_getattr(self):
+        class TestView(View):
+            QUERY_PARAMS = {'page': (int, 0)}
+
+            @property
+            def query_page(self):
+                return 999  # custom logic
+
+        self.connection.query = {'page': '5'}
+        view = TestView(self.manager, self.connection)
+        self.assertEqual(view.query_page, 999)
+
+
+class TestFormData(unittest.TestCase):
+    """Tests for form_data, get_form(), and has_form()."""
+
+    def setUp(self):
+        self.manager = Mock()
+        self.connection = Mock()
+        self.connection.query = None
+
+    def test_form_data_returns_dict(self):
+        self.connection.data = {'name': 'John', 'age': '25'}
+        view = View(self.manager, self.connection)
+        self.assertEqual(view.form_data, {'name': 'John', 'age': '25'})
+
+    def test_form_data_returns_empty_dict_when_none(self):
+        self.connection.data = None
+        view = View(self.manager, self.connection)
+        self.assertEqual(view.form_data, {})
+
+    def test_form_data_returns_empty_dict_when_not_dict(self):
+        self.connection.data = b'binary data'
+        view = View(self.manager, self.connection)
+        self.assertEqual(view.form_data, {})
+
+    def test_get_form_returns_value(self):
+        self.connection.data = {'name': 'John', 'email': 'john@example.com'}
+        view = View(self.manager, self.connection)
+        self.assertEqual(view.get_form('name'), 'John')
+        self.assertEqual(view.get_form('email'), 'john@example.com')
+
+    def test_get_form_returns_default_when_missing(self):
+        self.connection.data = {'name': 'John'}
+        view = View(self.manager, self.connection)
+        self.assertIsNone(view.get_form('email'))
+        self.assertEqual(view.get_form('email', ''), '')
+        self.assertEqual(view.get_form('age', 0), 0)
+
+    def test_get_form_returns_default_when_no_data(self):
+        self.connection.data = None
+        view = View(self.manager, self.connection)
+        self.assertIsNone(view.get_form('name'))
+        self.assertEqual(view.get_form('name', 'default'), 'default')
+
+    def test_has_form_single_key(self):
+        self.connection.data = {'save': '1', 'name': 'John'}
+        view = View(self.manager, self.connection)
+        self.assertTrue(view.has_form('save'))
+        self.assertTrue(view.has_form('name'))
+        self.assertFalse(view.has_form('delete'))
+
+    def test_has_form_multiple_keys(self):
+        self.connection.data = {'name': 'John', 'email': 'john@example.com'}
+        view = View(self.manager, self.connection)
+        self.assertTrue(view.has_form('name', 'email'))
+        self.assertFalse(view.has_form('name', 'age'))
+
+    def test_has_form_returns_false_when_no_data(self):
+        self.connection.data = None
+        view = View(self.manager, self.connection)
+        self.assertFalse(view.has_form('save'))
+
+    def test_has_form_returns_false_when_not_dict(self):
+        self.connection.data = b'binary'
+        view = View(self.manager, self.connection)
+        self.assertFalse(view.has_form('save'))
+
+
 class TestView(unittest.TestCase):
     """Tests for View class."""
 

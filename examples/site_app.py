@@ -84,23 +84,21 @@ class SiteView(BaseView):
     """Base for all site-scoped views."""
     PATTERN = '/{site}'
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._site = None
-
     @property
-    def site(self):
+    def path_site(self):
+        """Custom path_site with DB lookup and caching."""
+        if not hasattr(self, '_site'):
+            site_id = self.path_params['site']
+            self._site = SITES.get(site_id)
+            if not self._site:
+                raise NotFoundException(f"Site '{site_id}' not found")
         return self._site
 
     def do_check(self):
         super().do_check()
         if not self.user:
             raise RedirectException('/')
-
-        site_id = self.path_params['site']
-        self._site = SITES.get(site_id)
-        if not self._site:
-            raise NotFoundException(f"Site '{site_id}' not found")
+        _ = self.path_site  # trigger site loading/validation
 
 
 class SiteHomeView(SiteView):
@@ -109,10 +107,10 @@ class SiteHomeView(SiteView):
 
     def do_get(self):
         self.respond({
-            'site': self.site,
+            'site': self.path_site,
             'user': self.user['name'],
             'links': {
-                'cargo': f"/{self.site['id']}/cargo",
+                'cargo': f"/{self.path_site['id']}/cargo",
             },
         })
 
@@ -120,39 +118,68 @@ class SiteHomeView(SiteView):
 class CargoListView(SiteView):
     """List cargo for a site."""
     PATTERN = '/cargo'  # /{site}/cargo
+    QUERY_PARAMS = {
+        'page': (int, 0),
+        'limit': (int, 10),
+    }
 
     def do_get(self):
-        site_cargo = CARGO.get(self.site['id'], [])
+        site_cargo = CARGO.get(self.path_site['id'], [])
+        # Pagination using query_* attributes
+        start = self.query_page * self.query_limit
+        end = start + self.query_limit
         self.respond({
-            'site': self.site['name'],
-            'cargo': site_cargo,
+            'site': self.path_site['name'],
+            'cargo': site_cargo[start:end],
             'count': len(site_cargo),
+            'page': self.query_page,
+            'limit': self.query_limit,
         })
 
 
 class CargoDetailView(SiteView):
-    """Cargo detail."""
+    """Cargo detail with form handling."""
     PATTERN = '/cargo/{id:int}'  # /{site}/cargo/{id:int}
 
-    def do_get(self):
-        cargo_id = self.path_params['id']
-        site_cargo = CARGO.get(self.site['id'], [])
-        cargo = next((c for c in site_cargo if c['id'] == cargo_id), None)
+    def _get_cargo(self):
+        site_cargo = CARGO.get(self.path_site['id'], [])
+        cargo = next((c for c in site_cargo if c['id'] == self.path_id), None)
         if not cargo:
-            raise NotFoundException(f"Cargo {cargo_id} not found")
+            raise NotFoundException(f"Cargo {self.path_id} not found")
+        return cargo
+
+    def do_get(self):
+        cargo = self._get_cargo()
         self.respond({
-            'site': self.site['name'],
+            'site': self.path_site['name'],
             'cargo': cargo,
         })
 
+    def do_post(self):
+        """Update cargo via form data."""
+        cargo = self._get_cargo()
+
+        if self.has_form('save'):
+            # Update from form data
+            cargo['name'] = self.get_form('name', cargo['name'])
+            weight = self.get_form('weight')
+            if weight and weight.isdigit():
+                cargo['weight'] = int(weight)
+            self.respond({'updated': cargo})
+
+        elif self.has_form('delete'):
+            site_cargo = CARGO.get(self.path_site['id'], [])
+            site_cargo.remove(cargo)
+            self.respond({'deleted': self.path_id})
+
+        else:
+            self.respond({'error': 'Unknown action'}, status=400)
+
     def do_delete(self):
-        cargo_id = self.path_params['id']
-        site_cargo = CARGO.get(self.site['id'], [])
-        cargo = next((c for c in site_cargo if c['id'] == cargo_id), None)
-        if not cargo:
-            raise NotFoundException(f"Cargo {cargo_id} not found")
+        cargo = self._get_cargo()
+        site_cargo = CARGO.get(self.path_site['id'], [])
         site_cargo.remove(cargo)
-        self.respond({'deleted': cargo_id})
+        self.respond({'deleted': self.path_id})
 
 
 # Admin views (separate hierarchy)
@@ -198,10 +225,9 @@ class AdminUserDetailView(AdminView):
     PATTERN = '/users/{id:int}'  # /admin/users/{id:int}
 
     def do_get(self):
-        user_id = self.path_params['id']
-        user = next((u for u in USERS if u['id'] == user_id), None)
+        user = next((u for u in USERS if u['id'] == self.path_id), None)
         if not user:
-            raise NotFoundException(f"User {user_id} not found")
+            raise NotFoundException(f"User {self.path_id} not found")
         self.respond({'user': user})
 
 
@@ -225,15 +251,18 @@ def main():
     server = HttpServer(port=8080)
     print("Site app running on http://localhost:8080")
     print()
-    print("Pattern inheritance demo:")
-    print("  SiteView.PATTERN = '/{site}'")
-    print("  CargoListView.PATTERN = '/cargo'")
-    print("  CargoListView.get_full_pattern() = '/{site}/cargo'")
+    print("Features demo:")
+    print("  Pattern inheritance: CargoListView.get_full_pattern() = '/{site}/cargo'")
+    print("  Path params: self.path_site, self.path_id (lazy-load)")
+    print("  Query params: self.query_page, self.query_limit (with defaults)")
+    print("  Form data: self.has_form(), self.get_form(), self.form_data")
     print()
     print("Test with:")
-    print("  curl http://localhost:8080/site1/cargo")
-    print("  curl -b 'session=admin123' http://localhost:8080/site1/cargo")
-    print("  curl -b 'session=admin123' http://localhost:8080/admin/users")
+    print("  curl -b 'session=admin123' localhost:8080/site1/cargo")
+    print("  curl -b 'session=admin123' localhost:8080/site1/cargo?page=0\\&limit=5")
+    print("  curl -b 'session=admin123' localhost:8080/site1/cargo/1")
+    print("  curl -b 'session=admin123' -X POST -d 'save=1&name=NewName' localhost:8080/site1/cargo/1")
+    print("  curl -b 'session=admin123' localhost:8080/admin/users")
 
     while True:
         connection = server.wait(timeout=1)

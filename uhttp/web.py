@@ -391,11 +391,71 @@ class View:
 
         return path_params
 
+    QUERY_PARAMS = {}
+
     def __init__(self, manager, connection, path_params=None):
         self._manager = manager
         self._connection = connection
         self._path_params = path_params or {}
+        self._query_params = None  # lazy-loaded
         self._start_time_ns = _time.perf_counter_ns()
+
+    def __getattr__(self, name):
+        """Lazy-load path_* and query_* attributes.
+
+        Provides convenient access to URL and query parameters:
+            self.path_id    → self.path_params['id']
+            self.query_page → parsed from connection.query with type conversion
+
+        Values are cached after first access. Define a @property to override
+        with custom logic (properties take precedence over __getattr__).
+        """
+        if name.startswith('path_'):
+            param = name[5:]
+            if param in self._path_params:
+                value = self._path_params[param]
+                setattr(self, name, value)
+                return value
+            raise AttributeError(
+                f"'{type(self).__name__}' has no path param '{param}'")
+
+        if name.startswith('query_'):
+            param = name[6:]
+            value = self._get_query_param(param)
+            setattr(self, name, value)
+            return value
+
+        raise AttributeError(
+            f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def _get_query_params_def(self):
+        """Collect QUERY_PARAMS from class hierarchy."""
+        params = {}
+        for klass in reversed(type(self).__mro__):
+            if 'QUERY_PARAMS' in getattr(klass, '__dict__', {}):
+                params.update(klass.QUERY_PARAMS)
+        return params
+
+    def _get_query_param(self, name):
+        """Parse and convert a single query parameter."""
+        params_def = self._get_query_params_def()
+
+        if name not in params_def:
+            raise AttributeError(
+                f"'{type(self).__name__}' has no query param '{name}' defined")
+
+        param_type, default = params_def[name]
+        query = self._connection.query or {}
+
+        if name not in query:
+            return default
+
+        raw_value = query[name]
+        try:
+            return param_type(raw_value)
+        except (ValueError, TypeError) as err:
+            raise BadRequestException(
+                f"Invalid query parameter '{name}': {err}")
 
     @property
     def manager(self):
@@ -411,6 +471,45 @@ class View:
     def path_params(self):
         """Path parameters extracted from URL."""
         return self._path_params
+
+    @property
+    def query_params(self):
+        """Query parameters parsed according to QUERY_PARAMS definition."""
+        if self._query_params is None:
+            self._query_params = {}
+            for name in self._get_query_params_def():
+                self._query_params[name] = self._get_query_param(name)
+        return self._query_params
+
+    @property
+    def form_data(self):
+        """Form/JSON body data as dict, or empty dict if not available."""
+        data = self._connection.data
+        return data if isinstance(data, dict) else {}
+
+    def get_form(self, key, default=None):
+        """Get form field value or default.
+
+        Args:
+            key: Field name to retrieve.
+            default: Value to return if field is missing.
+
+        Returns:
+            Field value or default. No type conversion.
+        """
+        return self.form_data.get(key, default)
+
+    def has_form(self, *keys):
+        """Check if form has all specified keys.
+
+        Args:
+            *keys: Field names to check.
+
+        Returns:
+            True if all keys present in form data.
+        """
+        data = self.form_data
+        return all(k in data for k in keys)
 
     @property
     def process_time_us(self):
