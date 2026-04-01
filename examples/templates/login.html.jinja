@@ -1,0 +1,25 @@
+{% extends "base.html.jinja" %}
+
+{% block content %}
+<div class="card">
+    <h1>Login</h1>
+
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST">
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" placeholder="Enter your email" required>
+
+        <button type="submit" class="btn">Login</button>
+    </form>
+
+    <p style="margin-top: 20px; color: #666;">
+        Demo accounts:<br>
+        <code>alice@example.com</code> (admin)<br>
+        <code>bob@example.com</code> (user)<br>
+        <code>charlie@example.com</code> (user)
+    </p>
+</div>
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends "base.html.jinja" %}
+
+{% block content %}
+<div class="card">
+    <h1>Welcome{% if user %}, {{ user.name }}{% endif %}!</h1>
+    <p>This is a demo application built with <strong>uhttp-web</strong>.</p>
+
+    {% if not user %}
+    <p>Please <a href="/login">login</a> to access all features.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>Quick Stats</h2>
+    <p>Total users: <strong>{{ user_count }}</strong></p>
+</div>
+
+<div class="card">
+    <h2>Recent Users</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Role</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td>{{ u.id }}</td>
+                <td><a href="/user/{{ u.id }}">{{ u.name }}</a></td>
+                <td>{{ u.role }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html.jinja" %}
+
+{% block content %}
+<div class="card">
+    <h1>Admin Panel</h1>
+    <p>Welcome, administrator!</p>
+</div>
+
+<div class="card">
+    <h2>Active Sessions</h2>
+    {% if sessions %}
+    <ul>
+        {% for session in sessions %}
+        <li><code>{{ session[:16] }}...</code></li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>No active sessions.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>Debug Info</h2>
+    <p>Request path: <code>{{ path }}</code></p>
+    <p>Method: <code>{{ method }}</code></p>
+    <p>Protocol: <code>{{ protocol }}</code></p>
+</div>
+{% endblock %}

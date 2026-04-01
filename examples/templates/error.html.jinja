@@ -1,0 +1,20 @@
+{% extends "base.html.jinja" %}
+
+{% block content %}
+<div class="card">
+    <h1>Error</h1>
+
+    <div class="error">
+        {{ error_message | default('An error occurred') }}
+    </div>
+
+    {% if error_data %}
+    <h3>Debug Information</h3>
+    <pre style="background: #f8f9fa; padding: 15px; overflow-x: auto;">{{ error_data }}</pre>
+    {% endif %}
+
+    <p style="margin-top: 20px;">
+        <a href="/" class="btn">Go Home</a>
+    </p>
+</div>
+{% endblock %}
