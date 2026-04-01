@@ -14,8 +14,8 @@ from uhttp.web import (
     serve_static,
     # Exceptions
     WebException, BadRequestException, UnauthorizedException,
-    ForbiddenException, NotFoundException, ServiceUnavailableException,
-    MethodNotAllowedException, RedirectException,
+    ForbiddenException, NotFoundException, ConflictException,
+    ServiceUnavailableException, MethodNotAllowedException, RedirectException,
     # Entity helpers
     entity_to_dict,
     # Router
@@ -150,6 +150,16 @@ class TestExceptions(unittest.TestCase):
         self.assertEqual(exc.status_code, 404)
         self.assertEqual(exc.message, "404: Not Found")
 
+    def test_conflict_exception(self):
+        exc = ConflictException()
+        self.assertEqual(exc.status_code, 409)
+        self.assertEqual(exc.message, "409: Conflict")
+
+    def test_conflict_exception_custom_message(self):
+        exc = ConflictException(message="Resource already exists")
+        self.assertEqual(exc.message, "Resource already exists")
+        self.assertEqual(exc.status_code, 409)
+
     def test_service_unavailable_exception(self):
         exc = ServiceUnavailableException()
         self.assertEqual(exc.status_code, 503)
@@ -173,6 +183,18 @@ class TestExceptions(unittest.TestCase):
         exc = RedirectException(url="/login", cookies={'session': None})
         self.assertEqual(exc.url, "/login")
         self.assertEqual(exc.cookies, {'session': None})
+
+    def test_web_exception_str(self):
+        exc = WebException(message="Test error")
+        self.assertEqual(str(exc), "Test error")
+
+    def test_web_exception_str_no_message(self):
+        exc = WebException(status_code=418)
+        self.assertEqual(str(exc), "418 Error")
+
+    def test_not_found_exception_str(self):
+        exc = NotFoundException("User not found")
+        self.assertEqual(str(exc), "User not found")
 
 
 class TestEntityToDict(unittest.TestCase):
@@ -1256,6 +1278,239 @@ class TestRouterInclude(unittest.TestCase):
         self.connection.path = '/api/'
         result = main_router.dispatch(self.manager, self.connection)
         self.assertIsInstance(result, ApiView)
+
+
+class TestMethodNotAllowedHeader(unittest.TestCase):
+    """Tests for Allow header in 405 responses."""
+
+    def setUp(self):
+        self.manager = Mock()
+        self.connection = Mock()
+        self.connection.path = '/test'
+        self.connection.host = 'localhost'
+        self.connection.protocol = 'HTTP/1.1'
+        self.connection.headers = {}
+        self.connection.query = None
+        self.connection.data = None
+        self.connection.cookies = {}
+
+    def test_405_includes_allow_header(self):
+        class GetPostView(View):
+            def do_get(self):
+                self.respond({'ok': True})
+
+            def do_post(self):
+                self.respond({'ok': True})
+
+        self.connection.method = 'DELETE'
+        view = GetPostView(self.manager, self.connection)
+        view.request()
+
+        args = self.connection.respond.call_args
+        self.assertEqual(args[0][1], 405)  # status
+        headers = args[0][2]  # headers
+        self.assertIn('Allow', headers)
+        self.assertIn('GET', headers['Allow'])
+        self.assertIn('POST', headers['Allow'])
+
+    def test_405_allow_header_all_methods(self):
+        class CrudView(View):
+            def do_get(self):
+                pass
+
+            def do_post(self):
+                pass
+
+            def do_put(self):
+                pass
+
+            def do_delete(self):
+                pass
+
+            def do_patch(self):
+                pass
+
+        self.connection.method = 'OPTIONS'
+        view = CrudView(self.manager, self.connection)
+        view.request()
+
+        args = self.connection.respond.call_args
+        headers = args[0][2]
+        allow = headers['Allow']
+        for method in ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']:
+            self.assertIn(method, allow)
+
+
+class TestHtmlView(unittest.TestCase):
+    """Tests for HtmlView class."""
+
+    def setUp(self):
+        self.manager = Mock()
+        self.connection = Mock()
+        self.connection.path = '/test'
+        self.connection.host = 'localhost'
+        self.connection.method = 'GET'
+        self.connection.protocol = 'HTTP/1.1'
+        self.connection.headers = {'content-type': 'text/html'}
+        self.connection.query = None
+        self.connection.data = None
+        self.connection.cookies = {}
+
+        # Mock template
+        self.template = Mock()
+        self.template.render.return_value = '<html>Test</html>'
+        self.manager.get_template.return_value = self.template
+
+    def test_init_adds_request_data(self):
+        view = HtmlView(self.manager, self.connection)
+        self.assertEqual(view.template_data['path'], '/test')
+        self.assertEqual(view.template_data['host'], 'localhost')
+        self.assertEqual(view.template_data['method'], 'GET')
+
+    def test_add_data(self):
+        view = HtmlView(self.manager, self.connection)
+        view.add_data(title='Test Page', count=42)
+        self.assertEqual(view.template_data['title'], 'Test Page')
+        self.assertEqual(view.template_data['count'], 42)
+
+    def test_add_entity_converts(self):
+        entity = Mock()
+        entity.get_template_data.return_value = {'id': 1, 'name': 'Test'}
+        view = HtmlView(self.manager, self.connection)
+        view.add_entity(item=entity)
+        self.assertEqual(view.template_data['item'], {'id': 1, 'name': 'Test'})
+
+    def test_respond_renders_template(self):
+        view = HtmlView(self.manager, self.connection)
+        view.add_data(title='Home')
+        view.respond()
+
+        self.manager.get_template.assert_called_once_with('base.html.jinja')
+        self.template.render.assert_called_once()
+        self.connection.respond.assert_called_once()
+
+    def test_respond_custom_template(self):
+        view = HtmlView(self.manager, self.connection)
+        view.respond(template='custom.html.jinja')
+        self.manager.get_template.assert_called_once_with('custom.html.jinja')
+
+    def test_respond_sets_content_type(self):
+        view = HtmlView(self.manager, self.connection)
+        view.respond()
+
+        args = self.connection.respond.call_args[0]
+        headers = args[2]
+        self.assertIn('text/html', headers.get('content-type', ''))
+
+    def test_respond_does_not_modify_caller_headers(self):
+        view = HtmlView(self.manager, self.connection)
+        original_headers = {'X-Custom': 'value'}
+        view.respond(headers=original_headers)
+
+        # Original dict should not be modified
+        self.assertEqual(original_headers, {'X-Custom': 'value'})
+
+    def test_respond_json(self):
+        view = HtmlView(self.manager, self.connection)
+        view.respond_json({'key': 'value'})
+        args = self.connection.respond.call_args[0]
+        self.assertEqual(args[0], {'key': 'value'})
+
+    def test_handle_exception_renders_error_template(self):
+        view = HtmlView(self.manager, self.connection)
+        view.handle_exception(NotFoundException("Item not found"))
+
+        self.manager.get_template.assert_called_with('error.html.jinja')
+        self.assertIn('error_message', view.template_data)
+
+    def test_handle_exception_custom_template(self):
+        view = HtmlView(self.manager, self.connection)
+        exc = NotFoundException("Not found", template='404.html.jinja')
+        view.handle_exception(exc)
+
+        self.manager.get_template.assert_called_with('404.html.jinja')
+
+    def test_init_with_query(self):
+        self.connection.query = {'page': '1', 'sort': 'name'}
+        view = HtmlView(self.manager, self.connection)
+        self.assertEqual(view.template_data['query'], {'page': '1', 'sort': 'name'})
+
+    def test_init_with_form_data(self):
+        self.connection.data = {'name': 'John', 'email': 'john@example.com'}
+        view = HtmlView(self.manager, self.connection)
+        self.assertEqual(view.template_data['form_data'], self.connection.data)
+
+    def test_init_with_cookies(self):
+        self.connection.cookies = {'session': 'abc123'}
+        view = HtmlView(self.manager, self.connection)
+        self.assertEqual(view.template_data['cookies'], {'session': 'abc123'})
+
+
+class TestJsonViewExceptionHandling(unittest.TestCase):
+    """Tests for JsonView exception handling."""
+
+    def setUp(self):
+        self.manager = Mock()
+        self.connection = Mock()
+        self.connection.method = 'GET'
+        self.connection.query = None
+
+    def test_handle_exception_with_data(self):
+        view = JsonView(self.manager, self.connection)
+        exc = BadRequestException(data={'field': 'email', 'error': 'invalid'})
+        view.handle_exception(exc)
+
+        args = self.connection.respond.call_args[0]
+        self.assertEqual(args[0], {'field': 'email', 'error': 'invalid'})
+        self.assertEqual(args[1], 400)
+
+    def test_handle_exception_without_data(self):
+        view = JsonView(self.manager, self.connection)
+        exc = NotFoundException("User not found")
+        view.handle_exception(exc)
+
+        args = self.connection.respond.call_args[0]
+        self.assertEqual(args[0], {'status': 'User not found'})
+        self.assertEqual(args[1], 404)
+
+
+class TestPathTraversalEdgeCases(unittest.TestCase):
+    """Tests for path traversal security edge cases."""
+
+    def setUp(self):
+        self.manager = Mock()
+        self.connection = Mock()
+        self.temp_dir = tempfile.mkdtemp()
+        # Create /tmp/xxx/res/ structure
+        self.res_dir = os.path.join(self.temp_dir, 'res')
+        os.makedirs(self.res_dir)
+        self.test_file = os.path.join(self.res_dir, 'test.txt')
+        with open(self.test_file, 'w') as f:
+            f.write('Hello')
+        # Create /tmp/xxx/resources/ (similar name)
+        self.resources_dir = os.path.join(self.temp_dir, 'resources')
+        os.makedirs(self.resources_dir)
+        self.other_file = os.path.join(self.resources_dir, 'secret.txt')
+        with open(self.other_file, 'w') as f:
+            f.write('Secret')
+
+    def tearDown(self):
+        os.unlink(self.test_file)
+        os.rmdir(self.res_dir)
+        os.unlink(self.other_file)
+        os.rmdir(self.resources_dir)
+        os.rmdir(self.temp_dir)
+
+    def test_similar_directory_name_blocked(self):
+        """Ensure /res doesn't match /resources due to startswith."""
+        router = Router()
+        router.add_static('/static/', self.res_dir)
+
+        # This path would resolve to resources/secret.txt
+        # which starts with res (the base), but should be blocked
+        self.connection.path = '/static/../resources/secret.txt'
+        result = router.dispatch(self.manager, self.connection)
+        self.assertIsNone(result)
 
 
 if __name__ == '__main__':

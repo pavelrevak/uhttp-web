@@ -87,6 +87,9 @@ class WebException(Exception):
         self._template = template
         super().__init__(*args, **kwargs)
 
+    def __str__(self):
+        return self._message or f'{self._status_code} Error'
+
     @property
     def message(self):
         return self._message
@@ -138,6 +141,15 @@ class NotFoundException(WebException):
         if message is None:
             message = "404: Not Found"
         super().__init__(message=message, status_code=404, **kwargs)
+
+
+class ConflictException(WebException):
+    """409 Conflict"""
+
+    def __init__(self, message=None, **kwargs):
+        if message is None:
+            message = "409: Conflict"
+        super().__init__(message=message, status_code=409, **kwargs)
 
 
 class MethodNotAllowedException(WebException):
@@ -249,7 +261,7 @@ class Router:
                 file_path = _os.path.join(base_path, rel_path)
                 file_path = _os.path.abspath(file_path)
                 # Security: ensure path is within base_path
-                if not file_path.startswith(base_path):
+                if not file_path.startswith(base_path + _os.sep):
                     continue
                 cache = CACHE_NONE if self._debug else CACHE_STATIC
                 if serve_static(connection, file_path, cache=cache):
@@ -570,9 +582,13 @@ class View:
 
     def handle_exception(self, err):
         """Handle WebException. Override for custom error handling."""
+        headers = None
+        if isinstance(err, MethodNotAllowedException) and err.allowed:
+            headers = {'Allow': ', '.join(err.allowed)}
         self.respond(
             {'error': err.message, 'status': err.status_code},
-            status=err.status_code)
+            status=err.status_code,
+            headers=headers)
 
     def handle_error(self, err):
         """Handle unexpected errors. Override for custom error handling."""
@@ -650,8 +666,7 @@ class HtmlView(View):
         tpl = self._manager.get_template(template or self.TEMPLATE)
         html = tpl.render(self._template_data).encode('utf-8')
 
-        if headers is None:
-            headers = {}
+        headers = dict(headers) if headers else {}
         headers[_uhttp_server.CONTENT_TYPE] = _uhttp_server.CONTENT_TYPE_HTML_UTF8
 
         self._connection.respond(html, status, headers, cookies)
